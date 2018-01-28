@@ -39,6 +39,42 @@ static void sanitise(char *buf);
 #define ERR_FULL   3
 #define ERR_ILL    4
 
+#ifdef FUZZ
+static ssize_t my_recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+  ssize_t n;
+  ssize_t i;
+
+  if(daemon->tftp_fuzz_file)
+  {
+    printf("Fuzzy!\n");
+    FILE *f = fopen(daemon->tftp_fuzz_file, "rb");
+    if(!f)
+    {
+      printf("Couldn't open file: %s\n", daemon->tftp_fuzz_file);
+      exit(1);
+    }
+
+    n = fread((char*)msg->msg_iov->iov_base, 1, msg->msg_iov->iov_len, f);
+    fclose(f);
+
+    memcpy(msg->msg_name, "\x0a\x00\x41\x41\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00", 28);
+    msg->msg_namelen    = 28;
+    memcpy(msg->msg_control, "\x24\x00\x00\x00\x00\x00\x00\x00\x29\x00\x00\x00\x32\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00", 40);
+    msg->msg_controllen = 40;
+    msg->msg_flags      = 0;
+  }
+  else
+  {
+    n = recvmsg(sockfd, msg, flags);
+  }
+
+  return n;
+}
+#endif
+
+
+
 void tftp_request(struct listener *listen, time_t now)
 {
   ssize_t len;
@@ -94,10 +130,21 @@ void tftp_request(struct listener *listen, time_t now)
   /* we overwrote the buffer... */
   daemon->srv_save = NULL;
 
+#if FUZZ
+  if ((len = my_recvmsg(listen->tftpfd, &msg, 0)) < 2)
+#else
   if ((len = recvmsg(listen->tftpfd, &msg, 0)) < 2)
+#endif
     return;
 
   /* Can always get recvd interface for IPv6 */
+#if FUZZ
+  if(daemon->tftp_fuzz_file)
+  {
+    /* Do nothing. */
+  }
+  else
+#endif
   if (!check_dest)
     {
       if (listen->iface)
