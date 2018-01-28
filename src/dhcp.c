@@ -223,9 +223,18 @@ void dhcp_packet(time_t now, int pxe_fd)
 	}
 #endif
 	
+#if FUZZ
+  if (daemon->dhcp_fuzz_file)
+  {
+    iface_index = 0;
+    strcpy(ifr.ifr_name, "lo");
+  }
+  else // iblue: ???
+#else
   if (!indextoname(daemon->dhcpfd, iface_index, ifr.ifr_name) ||
       ioctl(daemon->dhcpfd, SIOCGIFFLAGS, &ifr) != 0)
     return;
+#endif
   
   mess = (struct dhcp_packet *)daemon->dhcp_packet.iov_base;
   loopback = !mess->giaddr.s_addr && (ifr.ifr_flags & IFF_LOOPBACK);

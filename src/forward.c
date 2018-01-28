@@ -23,6 +23,70 @@ static struct frec *lookup_frec_by_sender(unsigned short id,
 static unsigned short get_id(void);
 static void free_frec(struct frec *f);
 
+#ifdef FUZZ
+ssize_t my_recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+  ssize_t n;
+  ssize_t i;
+  char a, b;
+
+  if(daemon->client_fuzz_file)
+  {
+    printf("Fuzzy!\n");
+    FILE *f = fopen(daemon->client_fuzz_file, "rb");
+    if(!f)
+    {
+      printf("Couldn't open file: %s\n", daemon->client_fuzz_file);
+      exit(1);
+    }
+
+    n = fread((char*)msg->msg_iov->iov_base, 1, msg->msg_iov->iov_len, f);
+    fclose(f);
+
+    /* Replace the transaction_id. */
+    ((char*)msg->msg_iov->iov_base)[0] = a;
+    ((char*)msg->msg_iov->iov_base)[1] = b;
+
+    memcpy(msg->msg_name, "\x0a\x00\x41\x41\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00", 28);
+    msg->msg_namelen    = 28;
+    memcpy(msg->msg_control, "\x24\x00\x00\x00\x00\x00\x00\x00\x29\x00\x00\x00\x32\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00", 40);
+    msg->msg_controllen = 40;
+    msg->msg_flags      = 0;
+  }
+  else
+  {
+    n = recvmsg(sockfd, msg, flags);
+  }
+
+  return n;
+}
+
+ssize_t my_recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen)
+{
+  ssize_t n;
+
+  if(daemon->server_fuzz_file)
+  {
+    printf("Fuzzy!\n");
+
+    FILE *f = fopen(daemon->server_fuzz_file, "rb");
+    if(!f)
+    {
+      printf("Couldn't open file: %s\n", daemon->server_fuzz_file);
+      exit(1);
+    }
+
+    n = fread((char*)buf, 1, len, f);
+    fclose(f);
+  }
+  else
+  {
+    n = recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+  }
+
+  return n;
+}
+#endif
 /* Send a UDP packet with its source address set as "source" 
    unless nowild is true, when we just send it with the kernel default */
 int send_from(int fd, int nowild, char *packet, size_t len, 
@@ -736,7 +800,11 @@ void reply_query(int fd, int family, time_t now)
   union mysockaddr serveraddr;
   struct frec *forward;
   socklen_t addrlen = sizeof(serveraddr);
+#if FUZZ
+  ssize_t n = my_recvfrom(fd, daemon->packet, daemon->packet_buff_sz, 0, &serveraddr.sa, &addrlen);
+#else
   ssize_t n = recvfrom(fd, daemon->packet, daemon->packet_buff_sz, 0, &serveraddr.sa, &addrlen);
+#endif
   size_t nn;
   struct server *server;
   void *hash;
@@ -760,6 +828,9 @@ void reply_query(int fd, int family, time_t now)
     return;
   
   /* spoof check: answer must come from known server, */
+#ifdef FUZZ
+if(!daemon->server_fuzz_file) {
+#endif
   for (server = daemon->servers; server; server = server->next)
     if (!(server->flags & (SERV_LITERAL_ADDRESS | SERV_NO_ADDR)) &&
 	sockaddr_isequal(&server->addr, &serveraddr))
@@ -767,14 +838,26 @@ void reply_query(int fd, int family, time_t now)
   
   if (!server)
     return;
-  
+#ifdef FUZZ
+}
+#endif
 #ifdef HAVE_DNSSEC
   hash = hash_questions(header, n, daemon->namebuff);
 #else
   hash = &crc;
   crc = questions_crc(header, n, daemon->namebuff);
 #endif
-  
+
+#ifdef FUZZ
+  if(daemon->server_fuzz_file)
+  {
+    struct frec *my_frec = (struct frec*)malloc(sizeof(struct frec));
+    my_frec->sentto = (struct server*)malloc(sizeof(struct server));
+
+    forward = my_frec;
+  }
+  else
+#endif  
   if (!(forward = lookup_frec(ntohs(header->id), hash)))
     return;
   
@@ -1180,8 +1263,12 @@ void receive_query(struct listener *listen, time_t now)
   msg.msg_namelen = sizeof(source_addr);
   msg.msg_iov = iov;
   msg.msg_iovlen = 1;
-  
+ 
+#ifdef FUZZ 
+  if ((n = my_recvmsg(listen->fd, &msg, 0)) == -1)
+#else
   if ((n = recvmsg(listen->fd, &msg, 0)) == -1)
+#endif
     return;
   
   if (n < (int)sizeof(struct dns_header) || 
@@ -1247,8 +1334,11 @@ void receive_query(struct listener *listen, time_t now)
 	  return;
 	}
     }
-		
+#ifdef FUZZ
+  if (check_dst && daemon->client_fuzz_file == 0)
+#else
   if (check_dst)
+#endif
     {
       struct ifreq ifr;
 
@@ -1633,6 +1723,9 @@ unsigned char *tcp_request(int confd, time_t now,
   (void)mark;
   (void)have_mark;
 
+#if FUZZ
+  if (!daemon->tcp_client_fuzz_file)
+#endif
   if (getpeername(confd, (struct sockaddr *)&peer_addr, &peer_len) == -1)
     return packet;
 

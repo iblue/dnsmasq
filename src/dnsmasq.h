@@ -1079,6 +1079,15 @@ extern struct daemon {
   char *addrbuff;
   char *addrbuff2; /* only allocated when OPT_EXTRALOG */
 
+#ifdef FUZZ
+  char *client_fuzz_file;
+  char *server_fuzz_file;
+  char *tcp_client_fuzz_file;
+  char *tcp_server_fuzz_file;
+  char *tftp_fuzz_file;
+  char *dhcp_fuzz_file;
+  char *dhcp6_fuzz_file;
+#endif
 } *daemon;
 
 /* cache.c */
